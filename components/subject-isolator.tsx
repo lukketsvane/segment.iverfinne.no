@@ -45,7 +45,6 @@ export function SubjectIsolator() {
       setResult(res)
       setStatus("done")
     } catch (err) {
-      console.log("[v0] isolate error:", err)
       setError(err instanceof Error ? err.message : "Something went wrong while processing the image.")
       setStatus("error")
     }
@@ -137,13 +136,8 @@ export function SubjectIsolator() {
           <span className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
             <Upload className="size-6" />
           </span>
-          <span className="space-y-1">
-            <span className="block text-lg font-medium text-foreground text-balance">
-              Drop an image or tap to upload
-            </span>
-            <span className="block text-sm text-muted-foreground text-pretty">
-              We isolate the subject on solid white and trim the empty space.
-            </span>
+          <span className="block text-lg font-medium text-foreground text-balance">
+            Drop an image or tap to upload
           </span>
         </button>
       ) : (
