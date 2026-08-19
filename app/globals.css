@@ -156,8 +156,28 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    -webkit-tap-highlight-color: transparent;
+  }
+  html {
+    /* Keep iOS Safari from inflating text in landscape and from rubber-banding
+       or triggering pull-to-refresh on a single-screen app. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    overscroll-behavior: none;
   }
   body {
     @apply bg-background text-foreground;
+    overscroll-behavior: none;
+  }
+  a,
+  button,
+  canvas,
+  input,
+  label,
+  [role='button'] {
+    /* Remove the double-tap-to-zoom delay/gesture on interactive surfaces and
+       the long-press save/copy callout on rendered canvases. */
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
   }
 }

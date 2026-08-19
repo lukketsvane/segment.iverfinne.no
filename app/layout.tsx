@@ -1,10 +1,21 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
+import { SWRegister } from '@/components/sw-register'
 import './globals.css'
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://segment.iverfinne.no'),
   title: 'Subject Isolator',
   description: 'Isolate the subject of an image on a clean white background.',
+  applicationName: 'Subject Isolator',
+  appleWebApp: {
+    capable: true,
+    title: 'Subject Isolator',
+    statusBarStyle: 'black-translucent',
+  },
+  formatDetection: {
+    telephone: false,
+  },
   icons: {
     icon: [
       {
@@ -41,12 +52,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <head>
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-      </head>
       <body className="antialiased overscroll-none">
         {children}
+        <SWRegister />
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
