@@ -139,11 +139,18 @@ export function SubjectIsolator() {
     }
   }, [])
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
+  // Pointer events can fire well above 60Hz on touch hardware; coalescing to one
+  // update per animation frame keeps drags smooth instead of queuing redundant
+  // composeIsolated calls that only the last one would ever be seen.
+  const rafRef = useRef<number | null>(null)
+  const lastPointRef = useRef({ x: 0, y: 0 })
+
+  const applyDrag = useCallback(() => {
+    rafRef.current = null
     const d = dragRef.current
     if (!d) return
-    const dx = e.clientX - d.startX
-    const dy = e.clientY - d.startY
+    const dx = lastPointRef.current.x - d.startX
+    const dy = lastPointRef.current.y - d.startY
     if (!d.axis) {
       if (Math.abs(dx) < TAP_SLOP && Math.abs(dy) < TAP_SLOP) return
       d.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y"
@@ -156,7 +163,20 @@ export function SubjectIsolator() {
     }
   }, [])
 
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragRef.current) return
+      lastPointRef.current = { x: e.clientX, y: e.clientY }
+      if (rafRef.current == null) rafRef.current = requestAnimationFrame(applyDrag)
+    },
+    [applyDrag],
+  )
+
   const onPointerUp = useCallback(() => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
     const wasTap = dragRef.current?.axis == null
     dragRef.current = null
     setHudAxis(null)

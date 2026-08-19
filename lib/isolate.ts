@@ -7,24 +7,23 @@ export type IsolateResult = {
   bytes: number
 }
 
+type Blob_ = { area: number; minX: number; minY: number; maxX: number; maxY: number }
+type BlobInfo = { labels: Int32Array; blobs: Blob_[] }
+
 export type Cutout = {
   canvas: HTMLCanvasElement
   width: number
   height: number
+  /** Connected-component labeling is expensive; computed once and cached lazily. */
+  blobInfo?: BlobInfo
 }
-
-type ProgressFn = (stage: string, ratio: number) => void
 
 const ALPHA_THRESHOLD = 12
 
 /** Runs the (expensive) ML background removal once per image, returns the raw cutout. */
-export async function removeCutout(file: Blob, onProgress?: ProgressFn): Promise<Cutout> {
+export async function removeCutout(file: Blob): Promise<Cutout> {
   const cutout = await removeBackground(file, {
     output: { format: "image/png", quality: 1 },
-    progress: (key, current, total) => {
-      const ratio = total ? current / total : 0
-      onProgress?.(key.startsWith("fetch") ? "model" : "mask", ratio)
-    },
   })
 
   const bitmap = await createImageBitmap(cutout)
@@ -33,7 +32,7 @@ export async function removeCutout(file: Blob, onProgress?: ProgressFn): Promise
   const canvas = document.createElement("canvas")
   canvas.width = width
   canvas.height = height
-  const ctx = canvas.getContext("2d")
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
   if (!ctx) throw new Error("Canvas is not supported in this browser.")
   ctx.drawImage(bitmap, 0, 0)
   bitmap.close?.()
@@ -42,9 +41,9 @@ export async function removeCutout(file: Blob, onProgress?: ProgressFn): Promise
 }
 
 /** Labels 4-connected blobs of visible pixels; returns a label per pixel and each blob's area + bbox. */
-function labelBlobs(alpha: Uint8ClampedArray, w: number, h: number) {
+function labelBlobs(alpha: Uint8ClampedArray, w: number, h: number): BlobInfo {
   const labels = new Int32Array(w * h).fill(-1)
-  const blobs: { area: number; minX: number; minY: number; maxX: number; maxY: number }[] = []
+  const blobs: Blob_[] = []
   const stack = new Int32Array(w * h)
 
   for (let start = 0; start < w * h; start++) {
@@ -106,6 +105,16 @@ function labelBlobs(alpha: Uint8ClampedArray, w: number, h: number) {
   return { labels, blobs }
 }
 
+/** Connected components only depend on the mask itself, so this runs once per cutout and is cached on it. */
+function getBlobInfo(cutout: Cutout): BlobInfo {
+  if (cutout.blobInfo) return cutout.blobInfo
+  const ctx = cutout.canvas.getContext("2d", { willReadFrequently: true })
+  if (!ctx) throw new Error("Canvas is not supported in this browser.")
+  const { data } = ctx.getImageData(0, 0, cutout.width, cutout.height)
+  cutout.blobInfo = labelBlobs(data, cutout.width, cutout.height)
+  return cutout.blobInfo
+}
+
 export type ComposeOptions = {
   /** Whitespace around the subject, proportional to its largest dimension (0-24%). */
   paddingPct: number
@@ -113,58 +122,64 @@ export type ComposeOptions = {
   maxSubjects: number
 }
 
-/** Cheap, pixel-only step: crop to the N largest subjects, pad, composite on white. Reusable per gesture change. */
-export async function composeIsolated(cutout: Cutout, opts: ComposeOptions): Promise<IsolateResult> {
+/**
+ * Cheap, pixel-only step: crop to the N largest subjects, pad, composite on white.
+ * Blob detection is cached per cutout, so this only ever touches the crop's bounding
+ * box (not the full frame), making it fast enough to re-run on every gesture tick.
+ */
+export function composeIsolated(cutout: Cutout, opts: ComposeOptions): Promise<IsolateResult> {
   const { canvas, width: w, height: h } = cutout
-  const ctx = canvas.getContext("2d")
+  const { labels, blobs } = getBlobInfo(cutout)
+
+  let minX = 0
+  let minY = 0
+  let maxX = w - 1
+  let maxY = h - 1
+  let keepFlags: Uint8Array | null = null
+
+  if (blobs.length > 0) {
+    const keepCount = Math.max(1, Math.min(5, opts.maxSubjects))
+    const order = blobs.map((_, id) => id).sort((a, b) => blobs[b].area - blobs[a].area)
+    keepFlags = new Uint8Array(blobs.length)
+    minX = w
+    minY = h
+    maxX = -1
+    maxY = -1
+    for (let i = 0; i < Math.min(keepCount, order.length); i++) {
+      const id = order[i]
+      keepFlags[id] = 1
+      const b = blobs[id]
+      if (b.minX < minX) minX = b.minX
+      if (b.maxX > maxX) maxX = b.maxX
+      if (b.minY < minY) minY = b.minY
+      if (b.maxY > maxY) maxY = b.maxY
+    }
+  }
+
+  const cropW = maxX - minX + 1
+  const cropH = maxY - minY + 1
+
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
   if (!ctx) throw new Error("Canvas is not supported in this browser.")
-  const imageData = ctx.getImageData(0, 0, w, h)
-  const { data } = imageData
+  const cropData = ctx.getImageData(minX, minY, cropW, cropH)
 
-  const { labels, blobs } = labelBlobs(data, w, h)
-
-  let minX = w
-  let minY = h
-  let maxX = -1
-  let maxY = -1
-
-  if (blobs.length === 0) {
-    minX = 0
-    minY = 0
-    maxX = w - 1
-    maxY = h - 1
-  } else {
-    const keep = new Set(
-      blobs
-        .map((b, id) => ({ id, area: b.area }))
-        .sort((a, b) => b.area - a.area)
-        .slice(0, Math.max(1, Math.min(5, opts.maxSubjects)))
-        .map((b) => b.id),
-    )
-
-    for (let i = 0; i < labels.length; i++) {
-      if (keep.has(labels[i])) {
-        const x = i % w
-        const y = (i / w) | 0
-        if (x < minX) minX = x
-        if (x > maxX) maxX = x
-        if (y < minY) minY = y
-        if (y > maxY) maxY = y
-      } else {
-        data[i * 4 + 3] = 0
+  if (keepFlags) {
+    const d = cropData.data
+    for (let y = 0; y < cropH; y++) {
+      const rowBase = (minY + y) * w + minX
+      for (let x = 0; x < cropW; x++) {
+        if (!keepFlags[labels[rowBase + x]]) d[(y * cropW + x) * 4 + 3] = 0
       }
     }
   }
 
-  const masked = document.createElement("canvas")
-  masked.width = w
-  masked.height = h
-  const mctx = masked.getContext("2d")
-  if (!mctx) throw new Error("Canvas is not supported in this browser.")
-  mctx.putImageData(imageData, 0, 0)
+  const cropCanvas = document.createElement("canvas")
+  cropCanvas.width = cropW
+  cropCanvas.height = cropH
+  const cctx = cropCanvas.getContext("2d")
+  if (!cctx) throw new Error("Canvas is not supported in this browser.")
+  cctx.putImageData(cropData, 0, 0)
 
-  const cropW = maxX - minX + 1
-  const cropH = maxY - minY + 1
   const pad = Math.round((Math.max(cropW, cropH) * opts.paddingPct) / 100)
   const outW = cropW + pad * 2
   const outH = cropH + pad * 2
@@ -177,16 +192,12 @@ export async function composeIsolated(cutout: Cutout, opts: ComposeOptions): Pro
 
   octx.fillStyle = "#ffffff"
   octx.fillRect(0, 0, outW, outH)
-  octx.drawImage(masked, minX, minY, cropW, cropH, pad, pad, cropW, cropH)
+  octx.drawImage(cropCanvas, pad, pad)
 
-  const blob: Blob = await new Promise((resolve, reject) => {
-    out.toBlob((b) => (b ? resolve(b) : reject(new Error("Failed to render image."))), "image/png")
+  return new Promise((resolve, reject) => {
+    out.toBlob((b) => {
+      if (!b) return reject(new Error("Failed to render image."))
+      resolve({ url: URL.createObjectURL(b), width: outW, height: outH, bytes: b.size })
+    }, "image/png")
   })
-
-  return {
-    url: URL.createObjectURL(blob),
-    width: outW,
-    height: outH,
-    bytes: blob.size,
-  }
 }
