@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Download, FolderDown, Plus, Share, Trash2, X } from "lucide-react"
+import { Check, Download, FolderDown, Plus, Share, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cutoutImage, preloadEngine } from "@/lib/engine/client"
 import { compositeBlob, makeCutout, renderPreview, type Cutout, type IsolateOptions } from "@/lib/isolate"
@@ -21,6 +21,7 @@ const MAX_PADDING = 24
 const DEFAULT_PADDING = 12
 const TAP_SLOP = 10
 const THUMB_SIZE = 112
+const LONG_PRESS_MS = 450
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -44,12 +45,14 @@ export function SubjectIsolator() {
   const [hudAxis, setHudAxis] = useState<"x" | "y" | null>(null)
   const [fetchProgress, setFetchProgress] = useState<number | null>(null)
   const [shareCapable, setShareCapable] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const inputRef = useRef<HTMLInputElement>(null)
   const padRef = useRef<HTMLDivElement>(null)
   const previewRef = useRef<HTMLCanvasElement>(null)
   const thumbRefs = useRef(new Map<string, HTMLCanvasElement>())
   const itemsRef = useRef<Item[]>(items)
+  const selectedIdsRef = useRef<Set<string>>(selectedIds)
   const paddingRef = useRef(padding)
   const subjectCountRef = useRef(subjectCount)
   const queueRef = useRef<Promise<void>>(Promise.resolve())
@@ -64,10 +67,15 @@ export function SubjectIsolator() {
   } | null>(null)
 
   const activeIdRef = useRef(activeId)
+  const longPressTimerRef = useRef<number | null>(null)
+  const longPressFiredRef = useRef(false)
 
   useEffect(() => {
     itemsRef.current = items
   }, [items])
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds
+  }, [selectedIds])
   paddingRef.current = padding
   subjectCountRef.current = subjectCount
   activeIdRef.current = activeId
@@ -271,6 +279,12 @@ export function SubjectIsolator() {
       setActiveId((current) => (current === id ? (next[0]?.id ?? null) : current))
       return next
     })
+    setSelectedIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
   }, [])
 
   const clearAll = useCallback(() => {
@@ -278,7 +292,56 @@ export function SubjectIsolator() {
     exportRef.current = null
     setItems([])
     setActiveId(null)
+    setSelectedIds(new Set())
   }, [])
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
+
+  // Tap-hold on a thumbnail enters multi-select; once active, plain taps on
+  // other thumbnails toggle membership instead of changing the focused item.
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current != null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }, [])
+
+  const startLongPress = useCallback(
+    (id: string) => {
+      longPressFiredRef.current = false
+      cancelLongPress()
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTimerRef.current = null
+        longPressFiredRef.current = true
+        toggleSelected(id)
+      }, LONG_PRESS_MS)
+    },
+    [cancelLongPress, toggleSelected],
+  )
+
+  const onThumbClick = useCallback(
+    (id: string) => {
+      if (longPressFiredRef.current) {
+        longPressFiredRef.current = false
+        return
+      }
+      if (selectedIdsRef.current.size > 0) {
+        toggleSelected(id)
+      } else {
+        setActiveId(id)
+      }
+    },
+    [toggleSelected],
+  )
 
   // Saving goes through the native share sheet on iOS (→ "Save Image" lands in
   // Photos); the composited blob is precomputed at idle so the tap can call
@@ -316,9 +379,14 @@ export function SubjectIsolator() {
 
   // Browsers throttle downloads fired back-to-back with no gap, so each
   // anchor click gets a brief stagger instead of all firing in one tick.
+  // With an active selection this downloads only the selected items, then
+  // exits selection mode; otherwise it downloads everything ready.
   const downloadAll = useCallback(async () => {
     const opts = currentOptions()
-    const ready = itemsRef.current.filter((it) => it.status === "ready" && it.cutout)
+    const selected = selectedIdsRef.current
+    const pool =
+      selected.size > 0 ? itemsRef.current.filter((it) => selected.has(it.id)) : itemsRef.current
+    const ready = pool.filter((it) => it.status === "ready" && it.cutout)
     for (let i = 0; i < ready.length; i++) {
       const item = ready[i]
       if (!item.cutout) continue
@@ -332,10 +400,12 @@ export function SubjectIsolator() {
       setTimeout(() => URL.revokeObjectURL(url), 10_000)
       if (i < ready.length - 1) await new Promise((resolve) => setTimeout(resolve, 200))
     }
-  }, [currentOptions])
+    if (selected.size > 0) clearSelection()
+  }, [currentOptions, clearSelection])
 
   const active = items.find((it) => it.id === activeId) ?? null
   const readyCount = items.filter((it) => it.status === "ready").length
+  const selectedCount = selectedIds.size
 
   return (
     <div className="flex w-full max-w-md flex-col items-center gap-3">
@@ -438,11 +508,22 @@ export function SubjectIsolator() {
             >
               {shareCapable ? <Share className="size-5" /> : <Download className="size-5" />}
             </Button>
+            {selectedCount > 0 && (
+              <Button
+                onClick={clearSelection}
+                aria-label="Cancel selection"
+                variant="ghost"
+                size="icon"
+                className="size-11 bg-transparent text-white mix-blend-difference hover:bg-transparent"
+              >
+                <X className="size-5" />
+              </Button>
+            )}
             {items.length > 1 && (
               <Button
                 onClick={downloadAll}
-                disabled={readyCount === 0}
-                aria-label="Download all"
+                disabled={selectedCount > 0 ? false : readyCount === 0}
+                aria-label={selectedCount > 0 ? `Download ${selectedCount} selected` : "Download all"}
                 variant="ghost"
                 size="icon"
                 className="size-11 bg-transparent text-white mix-blend-difference hover:bg-transparent"
@@ -470,14 +551,21 @@ export function SubjectIsolator() {
               key={item.id}
               role="button"
               tabIndex={0}
-              onClick={() => setActiveId(item.id)}
+              onPointerDown={() => startLongPress(item.id)}
+              onPointerUp={cancelLongPress}
+              onPointerLeave={cancelLongPress}
+              onPointerCancel={cancelLongPress}
+              onContextMenu={(e) => e.preventDefault()}
+              onClick={() => onThumbClick(item.id)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") setActiveId(item.id)
+                if (e.key !== "Enter" && e.key !== " ") return
+                if (selectedIds.size > 0) toggleSelected(item.id)
+                else setActiveId(item.id)
               }}
               aria-label={item.name}
-              aria-pressed={item.id === activeId}
+              aria-pressed={selectedIds.size > 0 ? selectedIds.has(item.id) : item.id === activeId}
               className={`relative flex size-14 shrink-0 select-none items-center justify-center overflow-hidden rounded-2xl border bg-card ${
-                item.id === activeId ? "border-foreground" : "border-border"
+                selectedIds.has(item.id) || item.id === activeId ? "border-foreground" : "border-border"
               }`}
             >
               {item.status === "loading" ? (
@@ -494,17 +582,26 @@ export function SubjectIsolator() {
                   }}
                 />
               )}
-              <button
-                type="button"
-                aria-label="Remove"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  removeItem(item.id)
-                }}
-                className="absolute right-0.5 top-0.5 flex size-4 items-center justify-center rounded-full bg-background/80 text-foreground"
-              >
-                <X className="size-2.5" />
-              </button>
+              {selectedIds.has(item.id) && (
+                <div className="absolute inset-0 flex items-center justify-center bg-foreground/40">
+                  <span className="flex size-6 items-center justify-center rounded-full bg-foreground text-background">
+                    <Check className="size-3.5" />
+                  </span>
+                </div>
+              )}
+              {selectedIds.size === 0 && (
+                <button
+                  type="button"
+                  aria-label="Remove"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    removeItem(item.id)
+                  }}
+                  className="absolute right-0.5 top-0.5 flex size-4 items-center justify-center rounded-full bg-background/80 text-foreground"
+                >
+                  <X className="size-2.5" />
+                </button>
+              )}
             </div>
           ))}
         </div>
