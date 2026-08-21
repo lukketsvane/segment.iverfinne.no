@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Subject Isolator",
     short_name: "Isolator",
-    description: "Isolate the subject of an image on a clean white background.",
+    description: "Isolate the subject of an image on a transparent background.",
     id: "/",
     start_url: "/",
     display: "standalone",
