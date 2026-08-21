@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Download, Plus, Share, Trash2, X } from "lucide-react"
+import { Download, FolderDown, Plus, Share, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cutoutImage, preloadEngine } from "@/lib/engine/client"
 import { compositeBlob, makeCutout, renderPreview, type Cutout, type IsolateOptions } from "@/lib/isolate"
@@ -314,7 +314,28 @@ export function SubjectIsolator() {
     setTimeout(() => URL.revokeObjectURL(url), 10_000)
   }, [currentOptions])
 
+  // Browsers throttle downloads fired back-to-back with no gap, so each
+  // anchor click gets a brief stagger instead of all firing in one tick.
+  const downloadAll = useCallback(async () => {
+    const opts = currentOptions()
+    const ready = itemsRef.current.filter((it) => it.status === "ready" && it.cutout)
+    for (let i = 0; i < ready.length; i++) {
+      const item = ready[i]
+      if (!item.cutout) continue
+      const blob = await compositeBlob(item.cutout, opts)
+      const filename = `${item.name || "subject"}-isolated.png`
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = filename
+      anchor.click()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      if (i < ready.length - 1) await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+  }, [currentOptions])
+
   const active = items.find((it) => it.id === activeId) ?? null
+  const readyCount = items.filter((it) => it.status === "ready").length
 
   return (
     <div className="flex w-full max-w-md flex-col items-center gap-3">
@@ -417,6 +438,18 @@ export function SubjectIsolator() {
             >
               {shareCapable ? <Share className="size-5" /> : <Download className="size-5" />}
             </Button>
+            {items.length > 1 && (
+              <Button
+                onClick={downloadAll}
+                disabled={readyCount === 0}
+                aria-label="Download all"
+                variant="ghost"
+                size="icon"
+                className="size-11 bg-transparent text-white mix-blend-difference hover:bg-transparent"
+              >
+                <FolderDown className="size-5" />
+              </Button>
+            )}
             <Button
               onClick={clearAll}
               aria-label="Clear all"
