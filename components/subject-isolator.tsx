@@ -409,10 +409,10 @@ export function SubjectIsolator() {
           </div>
         </div>
 
+        {/* Bare glyphs, lifted clear of the frame: the card's 2.75rem corner
+            radius leaves empty space here, so they read as controls without a
+            chrome circle competing with the image. */}
         {items.length > 0 && (
-          {/* Bare glyphs, lifted clear of the frame: the card's 2.75rem corner
-              radius leaves empty space here, so they read as controls without a
-              chrome circle competing with the image. */}
           <div className="absolute -top-4 -right-1 flex gap-1">
             <Button
               onClick={exportActive}
