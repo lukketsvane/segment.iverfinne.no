@@ -411,7 +411,9 @@ export function SubjectIsolator() {
 
         {/* Bare glyphs, lifted clear of the frame: the card's 2.75rem corner
             radius leaves empty space here, so they read as controls without a
-            chrome circle competing with the image. */}
+            chrome circle competing with the image. Difference blending is what
+            lets the circle go — a white glyph over a white photo would other-
+            wise vanish, and it inverts to black instead. */}
         {items.length > 0 && (
           <div className="absolute -top-4 -right-1 flex gap-1">
             <Button
@@ -420,7 +422,7 @@ export function SubjectIsolator() {
               aria-label={shareCapable ? "Share" : "Download"}
               variant="ghost"
               size="icon"
-              className="size-11 bg-transparent text-foreground hover:bg-transparent"
+              className="size-11 bg-transparent text-white mix-blend-difference hover:bg-transparent"
             >
               {shareCapable ? <Share className="size-5" /> : <Download className="size-5" />}
             </Button>
@@ -429,7 +431,7 @@ export function SubjectIsolator() {
               aria-label="Clear all"
               variant="ghost"
               size="icon"
-              className="size-11 bg-transparent text-foreground hover:bg-transparent"
+              className="size-11 bg-transparent text-white mix-blend-difference hover:bg-transparent"
             >
               <Trash2 className="size-5" />
             </Button>
