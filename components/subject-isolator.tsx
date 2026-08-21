@@ -4,15 +4,8 @@ import type React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Download, Plus, Share, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { preloadModel, removeSubject } from "@/lib/bg-removal"
-import {
-  compositeBlob,
-  makeCutout,
-  normalizeImage,
-  renderPreview,
-  type Cutout,
-  type IsolateOptions,
-} from "@/lib/isolate"
+import { cutoutImage, preloadEngine } from "@/lib/engine/client"
+import { compositeBlob, makeCutout, renderPreview, type Cutout, type IsolateOptions } from "@/lib/isolate"
 
 type Item = {
   id: string
@@ -108,7 +101,7 @@ export function SubjectIsolator() {
   // download + session compile.
   useEffect(() => {
     const cancel = runWhenIdle(() => {
-      preloadModel(onModelProgress).catch(() => {})
+      preloadEngine(onModelProgress).catch(() => {})
     })
     return cancel
   }, [onModelProgress])
@@ -152,10 +145,8 @@ export function SubjectIsolator() {
   const processItem = useCallback(
     async (id: string, file: File) => {
       try {
-        const normalized = await normalizeImage(file)
-        const bitmap = await removeSubject(normalized, onModelProgress)
-        const cutout = makeCutout(bitmap)
-        updateItem(id, { cutout, status: "ready" })
+        const matte = await cutoutImage(file, onModelProgress)
+        updateItem(id, { cutout: makeCutout(matte), status: "ready" })
       } catch {
         updateItem(id, { status: "error" })
       }

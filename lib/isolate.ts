@@ -1,9 +1,9 @@
 /**
- * Pixel pipeline around the ML cutout: connected-component labeling, cropping
- * to the N largest subjects, padding, and compositing on white. Everything
- * here is cheap canvas work sized for phones — the expensive ML step lives in
- * lib/bg-removal.ts.
+ * Pixel work around the ML cutout: connected-component labeling, cropping to the
+ * N largest subjects, padding, and compositing on white. Cheap canvas work sized
+ * for phones — the expensive part lives in lib/engine.
  */
+import type { Matte } from "./engine/client"
 
 export type IsolateOptions = {
   /** Whitespace around the subject, proportional to its largest dimension (0-24%). */
@@ -17,7 +17,12 @@ type BlobInfo = { labels: Int32Array; blobs: BlobRegion[] }
 type Crop = { canvas: HTMLCanvasElement; width: number; height: number }
 
 export type Cutout = {
-  canvas: HTMLCanvasElement
+  /**
+   * Straight-alpha RGBA from the engine, kept as the source of truth. A canvas
+   * would store it premultiplied, which rounds away the decontaminated colours
+   * at exactly the soft edges the engine worked to get right.
+   */
+  pixels: Uint8ClampedArray
   width: number
   height: number
   /** Connected-component labeling is expensive; computed once and cached lazily. */
@@ -28,15 +33,6 @@ export type Cutout = {
 
 const ALPHA_THRESHOLD = 12
 
-/**
- * iPhone photos are 12-48MP; iOS Safari caps canvas area well below that, so
- * full-resolution pipelines silently produce blank output and huge transient
- * memory spikes. The segmentation model works at 1024px internally, so capping
- * the input's longest edge loses nothing visible and keeps every downstream
- * buffer small and safe.
- */
-export const MAX_INPUT_EDGE = 2048
-
 function canvasToBlob(canvas: HTMLCanvasElement, type: string): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -46,54 +42,14 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string): Promise<Blob> {
   })
 }
 
-function get2d(canvas: HTMLCanvasElement, willReadFrequently = false) {
-  const ctx = canvas.getContext("2d", willReadFrequently ? { willReadFrequently } : undefined)
+function get2d(canvas: HTMLCanvasElement) {
+  const ctx = canvas.getContext("2d")
   if (!ctx) throw new Error("Canvas is not supported in this browser.")
   return ctx
 }
 
-/**
- * Decodes via an <img> element (which applies EXIF orientation — portrait
- * iPhone photos are stored rotated) and downscales anything larger than
- * MAX_INPUT_EDGE before it reaches the ML pipeline. Small images in
- * browser-native formats pass through untouched.
- */
-export async function normalizeImage(file: Blob): Promise<Blob> {
-  const url = URL.createObjectURL(file)
-  try {
-    const image = new Image()
-    image.decoding = "async"
-    image.src = url
-    await image.decode()
-    const width = image.naturalWidth
-    const height = image.naturalHeight
-    if (!width || !height) throw new Error("Could not read image dimensions.")
-
-    const scale = Math.min(1, MAX_INPUT_EDGE / Math.max(width, height))
-    if (scale === 1 && /^image\/(png|jpeg|webp)$/.test(file.type)) return file
-
-    const canvas = document.createElement("canvas")
-    canvas.width = Math.max(1, Math.round(width * scale))
-    canvas.height = Math.max(1, Math.round(height * scale))
-    const ctx = get2d(canvas)
-    ctx.imageSmoothingQuality = "high"
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
-    return await canvasToBlob(canvas, "image/png")
-  } finally {
-    URL.revokeObjectURL(url)
-  }
-}
-
-/** Wraps the worker's cutout bitmap in a canvas we can read pixels from. */
-export function makeCutout(bitmap: ImageBitmap): Cutout {
-  const width = bitmap.width
-  const height = bitmap.height
-  const canvas = document.createElement("canvas")
-  canvas.width = width
-  canvas.height = height
-  get2d(canvas, true).drawImage(bitmap, 0, 0)
-  bitmap.close?.()
-  return { canvas, width, height, crops: new Map() }
+export function makeCutout(matte: Matte): Cutout {
+  return { pixels: matte.data, width: matte.width, height: matte.height, crops: new Map() }
 }
 
 /** Labels 4-connected blobs of visible pixels; returns a label per pixel and each blob's area + bbox. */
@@ -163,9 +119,7 @@ function labelBlobs(alpha: Uint8ClampedArray, w: number, h: number): BlobInfo {
 
 function getBlobInfo(cutout: Cutout): BlobInfo {
   if (cutout.blobInfo) return cutout.blobInfo
-  const ctx = get2d(cutout.canvas, true)
-  const { data } = ctx.getImageData(0, 0, cutout.width, cutout.height)
-  cutout.blobInfo = labelBlobs(data, cutout.width, cutout.height)
+  cutout.blobInfo = labelBlobs(cutout.pixels, cutout.width, cutout.height)
   return cutout.blobInfo
 }
 
@@ -175,7 +129,7 @@ function getCrop(cutout: Cutout, maxSubjects: number): Crop {
   const cached = cutout.crops.get(keepCount)
   if (cached) return cached
 
-  const { canvas, width: w, height: h } = cutout
+  const { pixels, width: w, height: h } = cutout
   const { labels, blobs } = getBlobInfo(cutout)
 
   let minX = 0
@@ -204,15 +158,18 @@ function getCrop(cutout: Cutout, maxSubjects: number): Crop {
 
   const cropW = maxX - minX + 1
   const cropH = maxY - minY + 1
-  const cropData = get2d(canvas, true).getImageData(minX, minY, cropW, cropH)
-
-  if (keepFlags) {
-    const d = cropData.data
-    for (let y = 0; y < cropH; y++) {
-      const rowBase = (minY + y) * w + minX
-      for (let x = 0; x < cropW; x++) {
-        if (!keepFlags[labels[rowBase + x]]) d[(y * cropW + x) * 4 + 3] = 0
-      }
+  const cropData = new ImageData(cropW, cropH)
+  const out = cropData.data
+  for (let y = 0; y < cropH; y++) {
+    const rowBase = (minY + y) * w + minX
+    for (let x = 0; x < cropW; x++) {
+      const source = (rowBase + x) * 4
+      const target = (y * cropW + x) * 4
+      const visible = !keepFlags || keepFlags[labels[rowBase + x]]
+      out[target] = pixels[source]
+      out[target + 1] = pixels[source + 1]
+      out[target + 2] = pixels[source + 2]
+      out[target + 3] = visible ? pixels[source + 3] : 0
     }
   }
 

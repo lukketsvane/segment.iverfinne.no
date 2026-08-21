@@ -1,16 +1,18 @@
 /*
- * Caching strategy, tuned for an ML app whose biggest cost is a ~44MB model:
- * - /imgly/* (versioned, immutable model + wasm assets): cache-first, forever.
+ * Caching strategy, tuned for an ML app whose biggest cost is its model:
+ * - /ort/* (version-stamped WASM runtime): cache-first, forever.
  * - /_next/static/* (content-hashed): cache-first.
  * - navigations: network-first with cache fallback, so deploys are picked up
  *   immediately but the app still opens offline / on flaky cellular.
  * Everything else (analytics, etc.) passes through untouched.
  */
-const VERSION = "v1"
-const MODEL_CACHE = `model-${VERSION}`
+// The weights themselves are cached by the engine under segment-models-v1,
+// keyed by a commit-pinned URL; this only covers the runtime and the shell.
+const VERSION = "v2"
+const RUNTIME_CACHE = `runtime-${VERSION}`
 const STATIC_CACHE = `static-${VERSION}`
 const SHELL_CACHE = `shell-${VERSION}`
-const KEEP = new Set([MODEL_CACHE, STATIC_CACHE, SHELL_CACHE])
+const KEEP = new Set([RUNTIME_CACHE, STATIC_CACHE, SHELL_CACHE])
 
 self.addEventListener("install", () => {
   self.skipWaiting()
@@ -55,8 +57,8 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
-  if (url.pathname.startsWith("/imgly/")) {
-    event.respondWith(cacheFirst(MODEL_CACHE, request))
+  if (url.pathname.startsWith("/ort/")) {
+    event.respondWith(cacheFirst(RUNTIME_CACHE, request))
     return
   }
   if (url.pathname.startsWith("/_next/static/")) {
