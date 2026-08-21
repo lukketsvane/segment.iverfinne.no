@@ -410,25 +410,28 @@ export function SubjectIsolator() {
         </div>
 
         {items.length > 0 && (
-          <div className="absolute -top-2 -right-2 flex gap-2">
+          {/* Bare glyphs, lifted clear of the frame: the card's 2.75rem corner
+              radius leaves empty space here, so they read as controls without a
+              chrome circle competing with the image. */}
+          <div className="absolute -top-4 -right-1 flex gap-1">
             <Button
               onClick={exportActive}
               disabled={active?.status !== "ready"}
               aria-label={shareCapable ? "Share" : "Download"}
-              variant="outline"
+              variant="ghost"
               size="icon"
-              className="size-11 rounded-full border-border bg-card shadow-sm"
+              className="size-11 bg-transparent text-foreground hover:bg-transparent"
             >
-              {shareCapable ? <Share className="size-4" /> : <Download className="size-4" />}
+              {shareCapable ? <Share className="size-5" /> : <Download className="size-5" />}
             </Button>
             <Button
               onClick={clearAll}
               aria-label="Clear all"
-              variant="outline"
+              variant="ghost"
               size="icon"
-              className="size-11 rounded-full border-border bg-card shadow-sm"
+              className="size-11 bg-transparent text-foreground hover:bg-transparent"
             >
-              <Trash2 className="size-4" />
+              <Trash2 className="size-5" />
             </Button>
           </div>
         )}
