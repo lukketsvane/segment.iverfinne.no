@@ -1,7 +1,7 @@
 /**
  * Pixel work around the ML cutout: connected-component labeling, cropping to the
- * N largest subjects, padding, and compositing on white. Cheap canvas work sized
- * for phones — the expensive part lives in lib/engine.
+ * N largest subjects, padding, and compositing on a transparent background.
+ * Cheap canvas work sized for phones — the expensive part lives in lib/engine.
  */
 import type { Matte } from "./engine/client"
 
@@ -188,10 +188,29 @@ function paddedSize(crop: Crop, paddingPct: number) {
   return { pad, outW: crop.width + pad * 2, outH: crop.height + pad * 2 }
 }
 
+/** Paints the standard transparency grid so a see-through cutout still reads as an image in the UI. */
+function drawCheckerboard(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, cell: number) {
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, w, h)
+  ctx.clip()
+  ctx.fillStyle = "#e5e5e5"
+  ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = "#ffffff"
+  for (let row = 0; row * cell < h; row++) {
+    for (let col = 0; col * cell < w; col++) {
+      if ((row + col) % 2 === 0) continue
+      ctx.fillRect(x + col * cell, y + row * cell, cell, cell)
+    }
+  }
+  ctx.restore()
+}
+
 /**
- * Draws the white-background composite letterboxed into a fixed square canvas.
- * With the crop cached, a padding tick is just a fillRect + drawImage, so this
- * is safe to run on every gesture frame — no PNG encodes, no object URLs.
+ * Draws the transparent composite letterboxed into a fixed square canvas, over
+ * a checkerboard so the alpha reads as transparency rather than empty space.
+ * With the crop cached, a padding tick is just a clear + drawImage, so this is
+ * safe to run on every gesture frame — no PNG encodes, no object URLs.
  */
 export function renderPreview(
   cutout: Cutout,
@@ -214,12 +233,11 @@ export function renderPreview(
   const dh = outH * scale
   const dx = (size - dw) / 2
   const dy = (size - dh) / 2
-  ctx.fillStyle = "#ffffff"
-  ctx.fillRect(dx, dy, dw, dh)
+  drawCheckerboard(ctx, dx, dy, dw, dh, Math.max(4, Math.round(size / 40)))
   ctx.drawImage(crop.canvas, dx + pad * scale, dy + pad * scale, crop.width * scale, crop.height * scale)
 }
 
-/** Full-resolution composite as a PNG blob, for share/download. */
+/** Full-resolution composite as a transparent PNG blob, for share/download. */
 export function compositeBlob(cutout: Cutout, opts: IsolateOptions): Promise<Blob> {
   const crop = getCrop(cutout, opts.maxSubjects)
   const { pad, outW, outH } = paddedSize(crop, opts.paddingPct)
@@ -227,8 +245,6 @@ export function compositeBlob(cutout: Cutout, opts: IsolateOptions): Promise<Blo
   out.width = outW
   out.height = outH
   const ctx = get2d(out)
-  ctx.fillStyle = "#ffffff"
-  ctx.fillRect(0, 0, outW, outH)
   ctx.drawImage(crop.canvas, pad, pad)
   return canvasToBlob(out, "image/png")
 }
