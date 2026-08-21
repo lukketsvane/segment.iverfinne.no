@@ -41,9 +41,10 @@ if (declared !== version) {
   )
 }
 
-// Only the threaded builds ship: the JSEP variant backs WebGPU, the plain one
-// is the CPU fallback. The non-threaded and asyncify variants are dead weight.
-const wanted = /^ort-wasm-simd-threaded(\.jsep)?\.(wasm|mjs)$/
+// Two of the four threaded builds: the plain one backs the CPU entry point, the
+// asyncify one backs WebGPU. (The jsep and jspi variants belong to entry points
+// this app does not import, and are ~40MB of dead weight in the deployment.)
+const wanted = /^ort-wasm-simd-threaded(\.asyncify)?\.(wasm|mjs)$/
 
 const files = (await readdir(dist)).filter((name) => wanted.test(name))
 if (files.length === 0) throw new Error(`[ort] no runtime assets matched in ${dist}`)

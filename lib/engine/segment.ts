@@ -186,7 +186,7 @@ export async function segment(source: ImageBitmap, runner: Runner): Promise<Segm
   const alpha = resample(coarse, size, size, width, height)
 
   let zoomed = false
-  const located = locateSubject(coarse, size)
+  const located = runner.refinePass ? locateSubject(coarse, size) : null
   const region = located ? zoomBox(located, bw, bh) : null
   if (region) {
     const detail = await infer(region)

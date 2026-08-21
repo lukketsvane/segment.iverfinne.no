@@ -101,6 +101,8 @@ async function fetchWeights(spec: ModelSpec, onProgress?: ProgressFn): Promise<A
 export type Runner = {
   spec: ModelSpec
   backend: Backend
+  /** Whether this device can afford the zoomed second inference pass. */
+  refinePass: boolean
   /** Runs one square RGB tensor and returns the raw single-channel output. */
   run(input: Float32Array, size: number): Promise<Float32Array>
 }
@@ -118,6 +120,7 @@ export async function createRunner(plan: Plan, onProgress?: ProgressFn): Promise
   return {
     spec,
     backend: plan.backend,
+    refinePass: plan.refinePass,
     async run(input: Float32Array, size: number): Promise<Float32Array> {
       const tensor: Tensor = new ort.Tensor("float32", input, [1, 3, size, size])
       const outputs = await session.run({ [spec.inputName]: tensor })

@@ -3,7 +3,8 @@
  * actually do. Runs inside the worker, where navigator.gpu and the network
  * hints are both available.
  */
-import { MODELS, type ModelId, type ModelSpec } from "./models"
+import { gpuAttemptUnfinished } from "./canary"
+import { MODELS, type ModelSpec } from "./models"
 
 export type Backend = "webgpu" | "wasm"
 
@@ -21,8 +22,14 @@ export type Plan = {
 }
 
 /** Minimal shape of the bits of WebGPU we touch; the DOM lib does not declare them. */
+type AdapterLike = {
+  limits: { maxStorageBufferBindingSize: number }
+  info?: { architecture?: string; description?: string; vendor?: string }
+  isFallbackAdapter?: boolean
+}
+
 type GpuLike = {
-  requestAdapter(options?: { powerPreference?: string }): Promise<{ limits: { maxStorageBufferBindingSize: number } } | null>
+  requestAdapter(options?: { powerPreference?: string }): Promise<AdapterLike | null>
 }
 
 /**
@@ -31,6 +38,20 @@ type GpuLike = {
  * it is filtered out before we commit to the download.
  */
 const MIN_STORAGE_BUFFER = 128 * 1024 * 1024
+
+/**
+ * Software rasterisers answer requestAdapter like real hardware, then run the
+ * graph on the CPU anyway — slower than threaded WASM, and heavy enough at
+ * 1024² to take the tab down with it.
+ */
+const SOFTWARE = /swiftshader|lavapipe|llvmpipe|softwarerasterizer|microsoft basic render/i
+
+function isSoftware(adapter: AdapterLike): boolean {
+  if (adapter.isFallbackAdapter) return true
+  const info = adapter.info
+  if (!info) return false
+  return SOFTWARE.test(`${info.vendor ?? ""} ${info.architecture ?? ""} ${info.description ?? ""}`)
+}
 
 /** True when the user has asked to conserve data, or is on a slow link. */
 function frugalNetwork(): boolean {
@@ -48,30 +69,27 @@ async function webgpuAvailable(): Promise<boolean> {
   if (!gpu) return false
   try {
     const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" })
-    return !!adapter && adapter.limits.maxStorageBufferBindingSize >= MIN_STORAGE_BUFFER
+    if (!adapter || isSoftware(adapter)) return false
+    return adapter.limits.maxStorageBufferBindingSize >= MIN_STORAGE_BUFFER
   } catch {
     return false
   }
 }
 
-export async function choosePlan(force?: ModelId): Promise<Plan> {
+export async function choosePlan(preferSmall = false): Promise<Plan> {
   const isolated = typeof crossOriginIsolated === "boolean" ? crossOriginIsolated : false
   const cores = navigator.hardwareConcurrency || 2
   // Past four threads the graph is memory bound rather than compute bound, and
   // the extra workers just compete with the browser's compositor on a phone.
   const threads = isolated ? Math.max(1, Math.min(4, cores - 1)) : 1
 
-  const gpu = await webgpuAvailable()
-  // The big model earns its download only where a GPU can run it: on WASM it is
-  // roughly ten times slower than IS-Net, which is the difference between a few
-  // seconds and most of a minute.
-  const useBig = force ? force === "birefnet-lite-fp16" : gpu && !frugalNetwork()
+  // BiRefNet only ever runs on a real GPU. It is an order of magnitude slower
+  // than IS-Net on WASM and heavy enough at 1024² to take the tab down with it,
+  // so the two choices move together: big model on the GPU, small one on the CPU.
+  const gpu = !preferSmall && !(await gpuAttemptUnfinished()) && (await webgpuAvailable())
+  const useBig = gpu && !frugalNetwork()
   const model = MODELS[useBig ? "birefnet-lite-fp16" : "isnet-quint8"]
+  const backend: Backend = useBig ? "webgpu" : "wasm"
 
-  // IS-Net's weights are int8 QDQ, which the WebGPU backend only partly covers —
-  // the fallbacks make it slower than plain threaded WASM. Only the fp16 model
-  // goes to the GPU.
-  const backend: Backend = model.id === "birefnet-lite-fp16" && gpu ? "webgpu" : "wasm"
-
-  return { backend, model, threads, refinePass: backend === "webgpu" || threads > 1 }
+  return { backend, model, threads, refinePass: useBig || threads > 1 }
 }
