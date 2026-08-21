@@ -6,7 +6,7 @@ import './globals.css'
 export const metadata: Metadata = {
   metadataBase: new URL('https://segment.iverfinne.no'),
   title: 'Subject Isolator',
-  description: 'Isolate the subject of an image on a clean white background.',
+  description: 'Isolate the subject of an image on a transparent background.',
   applicationName: 'Subject Isolator',
   appleWebApp: {
     capable: true,
